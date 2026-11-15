@@ -1,0 +1,20 @@
+app = "rocket-arena-server"
+primary_region = "iad"
+# org = marshellis
+
+[build]
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Sleep when nobody is playing; wake in a second or two when someone connects.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  # Run ONE machine (`fly scale count 1`). Matches live in that machine's
+  # memory, so a second machine would split players into matches that can't
+  # see each other.
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

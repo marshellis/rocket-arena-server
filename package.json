@@ -1,0 +1,8 @@
+{
+  "name": "rocket-server",
+  "version": "1.0.0",
+  "description": "Multiplayer server for ROCKET ARENA: serves the game, matchmaking, map voting, relay",
+  "main": "server.js",
+  "scripts": { "start": "node server.js", "test": "node test.js" },
+  "dependencies": { "ws": "^8.18.0" }
+}
