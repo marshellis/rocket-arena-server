@@ -1,14 +1,28 @@
 name: Deploy to Fly.io
+
 on:
+  workflow_dispatch:
   push:
     branches: [main]
-  workflow_dispatch:
+    paths:
+      - 'server.js'
+      - 'pass.js'
+      - 'package*.json'
+      - 'Dockerfile'
+      - 'fly.toml'
+
 jobs:
   deploy:
+    name: Deploy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only
+      # first run only: create the app if it isn't there yet
+      - run: flyctl status --app rocket-arena-server || flyctl apps create rocket-arena-server --org marshellis
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      # --ha=false: ONE machine (matches live in its memory; two would split players into matches that can't see each other)
+      - run: flyctl deploy --remote-only --ha=false
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

@@ -5,10 +5,13 @@
  *  - relays game traffic: the waiting player is the HOST (runs the physics),
  *    the joiner is the GUEST (sends inputs, receives snapshots)
  *
+ *  - family game pass: ?pass=<token> gives a verified name + play-time limit (GAME_PASS_SECRET; GAME_PASS_REQUIRED=1 refuses guests)
  *  Run:  node server.js        (default port 8787, set PORT=xxxx to change)
  */
 const http=require('http'),fs=require('fs'),path=require('path'),os=require('os');
 const {WebSocketServer}=require('ws');
+const {identify,watchPass}=require('./pass');   // family game pass (docs/room-kit/pass.js in marshellis/game-generator)
+const ROOM='rocket-arena';                       // the room name the game asks mg.getPass() for
 
 const PORT=+process.env.PORT||8787;
 const GAME_FILE=path.join(__dirname,'..','rocket-league.html');
@@ -80,16 +83,26 @@ function resolveVote(m){
   },RESULT_MS);
 }
 
-wss.on('connection',ws=>{
+wss.on('connection',(ws,req)=>{
+  // ?pass=<token> from the family platform. No/invalid pass = guest, or refused when GAME_PASS_REQUIRED=1.
+  const who=identify(new URL(req.url||'/','http://x').searchParams.get('pass'),process.env,Date.now()/1000,{room:ROOM});
+  if(!who){send(ws,{t:'signin'});ws.close(4001,'pass required');return;}
   ws.isAlive=true;ws.pname='PLAYER';ws.pcar='striker';ws.match=null;
+  ws.vname=null;                                   // name that came from a verified pass (the browser cannot change it)
+  if(who.verified){
+    ws.vname=clean(who.name,12).toUpperCase()||null;
+    ws.watch=watchPass(ws,who,{room:ROOM,secret:process.env.GAME_PASS_SECRET,onTimeUp:()=>leaveEverything(ws,true)});
+  }
   ws.on('pong',()=>{ws.isAlive=true;});
   ws.on('message',raw=>{
     let msg;try{msg=JSON.parse(raw);}catch(e){return;}
+    if(!msg||typeof msg!=='object')return;
+    if(msg.type==='renew'){if(ws.watch&&typeof msg.pass==='string')ws.watch.renew(msg.pass);return;}   // bad/foreign pass: ignored
     const m=ws.match;
     switch(msg.t){
       case 'queue':{
         leaveEverything(ws,true);
-        ws.pname=clean(msg.name,12).toUpperCase()||'PLAYER';ws.pcar=clean(msg.car,20)||'striker';
+        ws.pname=ws.vname||clean(msg.name,12).toUpperCase()||'PLAYER';ws.pcar=clean(msg.car,20)||'striker';
         if(waiting&&waiting!==ws&&waiting.readyState===1){const host=waiting;waiting=null;makeMatch(host,ws);}
         else{waiting=ws;send(ws,{t:'queued',online:online()});}
         break;}
@@ -109,7 +122,7 @@ wss.on('connection',ws=>{
   });
   ws.on('close',()=>leaveEverything(ws,true));
   ws.on('error',()=>{});
-  send(ws,{t:'hello',online:online()});
+  send(ws,{t:'hello',online:online(),name:ws.vname,verified:!!who.verified});
 });
 
 // keep-alive + tell people in the queue how many are online

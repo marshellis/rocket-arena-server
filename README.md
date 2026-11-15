@@ -43,6 +43,14 @@ node test.js     # checks queue → match → vote/tie → start → relay → l
 - The guest sees the world ~0.1 s behind the host (snapshot interpolation) and its controls travel to the host and back,
   so it feels best on the same network or a low-ping connection.
 
+## Family game pass
+Same protocol as the other Marshellis room servers (`marshellis/game-generator` -> `docs/game-pass.md`; `pass.js` is the
+byte-identical copy of `docs/room-kit/pass.js`). The game gets a pass with `mg.getPass('rocket-arena')` and connects to
+`wss://rocket-arena-server.fly.dev/?pass=<token>`. A verified player's name comes only from the pass; the client sends
+`{"type":"renew","pass":...}` about every 10 minutes; at expiry the server sends `{"type":"timeup"}` and closes with 4003.
+No pass, or no `GAME_PASS_SECRET` on the app = guest (the typed name is used). `GAME_PASS_REQUIRED=1` refuses guests (4001).
+To turn on verified names and play-time limits: `fly secrets set GAME_PASS_SECRET=<same value as the site's Vercel env> -a rocket-arena-server`.
+
 ## Hosting (Fly.io, family setup)
 This repo deploys to Fly.io (org `marshellis`, app `rocket-arena-server`) with
 `.github/workflows/deploy.yml` on every push to `main`, using the org-level `FLY_API_TOKEN` secret

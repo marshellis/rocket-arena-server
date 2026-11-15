@@ -1,16 +1,23 @@
 /* Protocol test: two clients queue -> match -> vote (tie) -> start -> relay -> leave */
 const {spawn}=require('child_process');
-const PORT=18787;
-const srv=spawn('node',['server.js'],{cwd:__dirname,env:{...process.env,PORT}});
+const crypto=require('crypto');
+const PORT=18787,REQ_PORT=18788,SECRET='test-secret-not-real';
+const srv=spawn('node',['server.js'],{cwd:__dirname,env:{...process.env,PORT,GAME_PASS_SECRET:SECRET}});
+const srvReq=spawn('node',['server.js'],{cwd:__dirname,env:{...process.env,PORT:REQ_PORT,GAME_PASS_SECRET:SECRET,GAME_PASS_REQUIRED:'1'}});
 let out='';srv.stdout.on('data',d=>out+=d);srv.stderr.on('data',d=>out+=d);
+// same algorithm as pass.js: base64url(claims).base64url(HMAC-SHA256(body, secret))
+const now=()=>Math.floor(Date.now()/1000);
+function sign(claims,secret=SECRET){const body=Buffer.from(JSON.stringify(claims)).toString('base64url');return body+'.'+crypto.createHmac('sha256',secret).update(body).digest('base64url');}
+const pass=(u,over={})=>sign({u,a:'fox',c:'#f80',room:'rocket-arena',exp:now()+60,lb:true,...over});
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 let fails=0;const ok=(c,m)=>{console.log((c?'  ok   ':'  FAIL ')+m);if(!c)fails++;};
 
-function client(name,car){
-  const ws=new WebSocket('ws://127.0.0.1:'+PORT);const log=[];const c={ws,log,
+function client(name,car,query='',port=PORT){
+  const ws=new WebSocket('ws://127.0.0.1:'+port+(query?'/?pass='+query:''));const log=[];const c={ws,log,code:null,
     send:o=>ws.send(JSON.stringify(o)),
     wait:async(t,ms=6000)=>{const t0=Date.now();while(Date.now()-t0<ms){const i=log.findIndex(m=>m.t===t);if(i>=0)return log.splice(i,1)[0];await sleep(20);}return null;}};
   ws.onmessage=e=>log.push(JSON.parse(e.data));
+  ws.onclose=e=>{c.code=e.code;};
   return new Promise(res=>{ws.onopen=()=>res(c);});
 }
 
@@ -44,8 +51,51 @@ function client(name,car){
   C.send({t:'vote',map:'frost'});D.send({t:'vote',map:'frost'});
   const r3=await C.wait('map');
   ok(r3&&r3.id==='frost'&&r3.tie===false,'same vote -> that map, not a tie');
+  /* ---------------- family game pass ---------------- */
+  console.log('game pass:');
+  // verified player: name comes from the pass, not from what the browser sends
+  const V=await client('','',pass('Zoe')),G=await client();
+  ok((await V.wait('hello'))?.verified===true,'valid pass -> hello says verified');
+  V.send({t:'queue',name:'Mallory',car:'neon'});await V.wait('queued');
+  G.send({t:'queue',name:'Bob'});
+  const mv=await V.wait('matched'),mg=await G.wait('matched');
+  ok(mg&&mg.opp.name==='ZOE','opponent sees the name from the pass, not the browser-sent name');
+  ok(mv&&mv.opp.name==='BOB','guests keep the name they typed');
+  // pass for another room / wrong secret / tampered / expired / not a pass = a guest named from the queue message
+  const bad=[['wrong room',pass('Eve',{room:'nexus'})],['wrong secret',sign({u:'Eve',room:'rocket-arena',exp:now()+60},'other')],
+    ['tampered',pass('Eve').slice(0,-2)+'xx'],['expired',pass('Eve',{exp:now()-5})],['garbage','not-a-pass']];
+  for(const [why,tok] of bad){
+    const X=await client('','',tok);const h=await X.wait('hello');
+    X.send({t:'queue',name:'Guesty'});
+    ok(h&&h.verified===false&&h.name===null,'bad pass ('+why+') is treated as a guest');
+    X.ws.close();
+  }
+  // renew: same user + room moves the expiry; someone else's pass is ignored; expiry -> timeup + close 4003
+  const fresh=now()+60;
+  const RN=await client('','',pass('Ann',{exp:now()+2})),BD=await client('','',pass('Bo',{exp:now()+2})),TU=await client('','',pass('Tim',{exp:now()+1}));
+  await RN.wait('hello');await BD.wait('hello');await TU.wait('hello');
+  RN.send({type:'renew',pass:pass('Ann',{exp:fresh})});
+  BD.send({type:'renew',pass:pass('Eve',{exp:fresh})});
+  await sleep(3500);
+  ok(RN.log.some(m=>m.type==='renewed'&&m.exp===fresh)&&RN.code===null&&!RN.log.some(m=>m.type==='timeup'),'renewed pass stays open past the old expiry');
+  ok(BD.log.some(m=>m.type==='timeup')&&BD.code===4003,"someone else's renew is ignored; original expiry stands");
+  ok(TU.log.some(m=>m.type==='timeup')&&TU.code===4003,'expiry -> timeup message then close 4003');
+  RN.ws.close();
+  // time-up of a matched player tells the opponent
+  const P1=await client('','',pass('Pia',{exp:now()+3})),P2=await client();
+  await P1.wait('hello');P1.send({t:'queue',name:'x'});await P1.wait('queued');P2.send({t:'queue',name:'y'});
+  await P1.wait('matched');await P2.wait('matched');
+  ok((await P2.wait('opp_left',6000))!==null,'when a matched player runs out of time the opponent is told');
+  // GAME_PASS_REQUIRED=1: guests are refused, a valid pass gets in
+  const Q1=await client('','','',REQ_PORT),Q2=await client('','',pass('Max'),REQ_PORT);
+  await sleep(500);
+  ok(Q1.log.some(m=>m.t==='signin')&&Q1.code===4001,'GAME_PASS_REQUIRED=1 refuses a guest (signin, then close 4001)');
+  ok(Q2.log.some(m=>m.t==='hello')&&Q2.code===null,'GAME_PASS_REQUIRED=1 lets a valid pass in');
+  Q2.ws.close();V.ws.close();G.ws.close();P2.ws.close();
+
   A.ws.close();C.ws.close();D.ws.close();
   await sleep(200);
+  srvReq.kill();
   srv.kill();
   console.log(fails?('\n'+fails+' FAILED'):'\nALL PASSED');
   process.exit(fails?1:0);
