@@ -51,6 +51,17 @@ function client(name,car,query='',port=PORT){
   C.send({t:'vote',map:'frost'});D.send({t:'vote',map:'frost'});
   const r3=await C.wait('map');
   ok(r3&&r3.id==='frost'&&r3.tie===false,'same vote -> that map, not a tie');
+  /* ---------------- protocol versions ---------------- */
+  console.log('versions:');
+  {const O=await client(),N=await client(),N2=await client();
+   O.send({t:'queue',name:'Old'});await O.wait('queued');                       // no ver = 1
+   N.send({t:'queue',name:'New',ver:2});await N.wait('queued');
+   ok(O.log.every(m=>m.t!=='matched')&&N.log.every(m=>m.t!=='matched'),'a v1 page and a v2 page are NOT paired');
+   N2.send({t:'queue',name:'New2',ver:2});
+   const m1=await N.wait('matched'),m2=await N2.wait('matched');
+   ok(m1&&m2&&m1.opp.name==='NEW2','two v2 players are paired');
+   O.ws.close();N.ws.close();N2.ws.close();}
+
   /* ---------------- family game pass ---------------- */
   console.log('game pass:');
   // verified player: name comes from the pass, not from what the browser sends

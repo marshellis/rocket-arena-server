@@ -28,13 +28,13 @@ const server=http.createServer((req,res)=>{
     });
   }else if(url==='/health'){
     res.writeHead(200,{'Content-Type':'application/json'});
-    res.end(JSON.stringify({ok:true,online:wss.clients.size,waiting:waiting?1:0,matches:matches.size}));
+    res.end(JSON.stringify({ok:true,online:wss.clients.size,waiting:waitingBy.size,matches:matches.size}));
   }else{res.writeHead(404,{'Content-Type':'text/plain'});res.end('Not found');}
 });
 
 /* ---------------------------------------------------------------- websocket */
 const wss=new WebSocketServer({server});
-let waiting=null;                 // socket waiting for an opponent
+const waitingBy=new Map();        // protocol version -> socket waiting for an opponent (only identical versions are paired)
 const matches=new Map();          // id -> match
 let nextId=1;
 
@@ -43,7 +43,7 @@ const clean=(v,max)=>String(v==null?'':v).replace(/[^\w \-]/g,'').trim().slice(0
 const online=()=>wss.clients.size;
 
 function leaveEverything(ws,notify){
-  if(waiting===ws)waiting=null;
+  if(ws.pver!==undefined&&waitingBy.get(ws.pver)===ws)waitingBy.delete(ws.pver);
   const m=ws.match;
   if(m){
     const other=m.host===ws?m.guest:m.host;
@@ -103,8 +103,10 @@ wss.on('connection',(ws,req)=>{
       case 'queue':{
         leaveEverything(ws,true);
         ws.pname=ws.vname||clean(msg.name,12).toUpperCase()||'PLAYER';ws.pcar=clean(msg.car,20)||'striker';
-        if(waiting&&waiting!==ws&&waiting.readyState===1){const host=waiting;waiting=null;makeMatch(host,ws);}
-        else{waiting=ws;send(ws,{t:'queued',online:online()});}
+        ws.pver=+msg.ver||1;   // the game bumps NET_VER when its snapshot/input format changes: a stale cached page must never meet a new one
+        {const w=waitingBy.get(ws.pver);
+        if(w&&w!==ws&&w.readyState===1){waitingBy.delete(ws.pver);makeMatch(w,ws);}
+        else{waitingBy.set(ws.pver,ws);send(ws,{t:'queued',online:online()});}}
         break;}
       case 'leave':leaveEverything(ws,true);break;
       case 'vote':
@@ -128,7 +130,7 @@ wss.on('connection',(ws,req)=>{
 // keep-alive + tell people in the queue how many are online
 setInterval(()=>{
   for(const ws of wss.clients){if(!ws.isAlive){ws.terminate();continue;}ws.isAlive=false;try{ws.ping();}catch(e){}}
-  if(waiting)send(waiting,{t:'online',online:online()});
+  for(const w of waitingBy.values())send(w,{t:'online',online:online()});
 },10000);
 
 server.listen(PORT,'0.0.0.0',()=>{
