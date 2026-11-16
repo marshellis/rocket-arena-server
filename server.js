@@ -28,13 +28,13 @@ const server=http.createServer((req,res)=>{
     });
   }else if(url==='/health'){
     res.writeHead(200,{'Content-Type':'application/json'});
-    res.end(JSON.stringify({ok:true,online:wss.clients.size,waiting:waitingBy.size,matches:matches.size}));
+    res.end(JSON.stringify({ok:true,online:wss.clients.size,waiting:waiting?1:0,matches:matches.size}));
   }else{res.writeHead(404,{'Content-Type':'text/plain'});res.end('Not found');}
 });
 
 /* ---------------------------------------------------------------- websocket */
 const wss=new WebSocketServer({server});
-const waitingBy=new Map();        // protocol version -> socket waiting for an opponent (only identical versions are paired)
+let waiting=null;                 // socket waiting for an opponent (any page version: newer pages fall back gracefully when the other side is older)
 const matches=new Map();          // id -> match
 let nextId=1;
 
@@ -43,7 +43,7 @@ const clean=(v,max)=>String(v==null?'':v).replace(/[^\w \-]/g,'').trim().slice(0
 const online=()=>wss.clients.size;
 
 function leaveEverything(ws,notify){
-  if(ws.pver!==undefined&&waitingBy.get(ws.pver)===ws)waitingBy.delete(ws.pver);
+  if(waiting===ws)waiting=null;
   const m=ws.match;
   if(m){
     const other=m.host===ws?m.guest:m.host;
@@ -60,7 +60,7 @@ function makeMatch(host,guest){
   send(host,{t:'matched',role:'host',opp:{name:guest.pname,car:guest.pcar},maps:MAPS,voteMs:VOTE_MS});
   send(guest,{t:'matched',role:'guest',opp:{name:host.pname,car:host.pcar},maps:MAPS,voteMs:VOTE_MS});
   m.voteTimer=setTimeout(()=>resolveVote(m),VOTE_MS);
-  console.log(`[match ${m.id}] ${host.pname} (host) vs ${guest.pname} (guest)`);
+  console.log(`[match ${m.id}] ${host.pname} (host, page v${host.pver||1}) vs ${guest.pname} (guest, page v${guest.pver||1})`);
 }
 
 function resolveVote(m){
@@ -103,10 +103,9 @@ wss.on('connection',(ws,req)=>{
       case 'queue':{
         leaveEverything(ws,true);
         ws.pname=ws.vname||clean(msg.name,12).toUpperCase()||'PLAYER';ws.pcar=clean(msg.car,20)||'striker';
-        ws.pver=+msg.ver||1;   // the game bumps NET_VER when its snapshot/input format changes: a stale cached page must never meet a new one
-        {const w=waitingBy.get(ws.pver);
-        if(w&&w!==ws&&w.readyState===1){waitingBy.delete(ws.pver);makeMatch(w,ws);}
-        else{waitingBy.set(ws.pver,ws);send(ws,{t:'queued',online:online()});}}
+        ws.pver=+msg.ver||1;   // informational (shown in the match log): a page without ver is the older netcode
+        if(waiting&&waiting!==ws&&waiting.readyState===1){const host=waiting;waiting=null;makeMatch(host,ws);}
+        else{waiting=ws;send(ws,{t:'queued',online:online()});}
         break;}
       case 'leave':leaveEverything(ws,true);break;
       case 'vote':
@@ -130,7 +129,7 @@ wss.on('connection',(ws,req)=>{
 // keep-alive + tell people in the queue how many are online
 setInterval(()=>{
   for(const ws of wss.clients){if(!ws.isAlive){ws.terminate();continue;}ws.isAlive=false;try{ws.ping();}catch(e){}}
-  for(const w of waitingBy.values())send(w,{t:'online',online:online()});
+  if(waiting)send(waiting,{t:'online',online:online()});
 },10000);
 
 server.listen(PORT,'0.0.0.0',()=>{
